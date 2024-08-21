@@ -12,7 +12,7 @@ import re
 import shutil
 from pathlib import Path
 from statistics import median
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from urllib.parse import urlparse
 
 import requests
@@ -201,8 +201,10 @@ class ESGFFile:
         self.urls = []
         self._checksums = []
         for result in results:
-            self.urls.append(result.download_url)
-            self._checksums.append((result.checksum_type, result.checksum))
+            if not result.download_url in self.urls:
+                self.urls.append(result.download_url)
+                self._checksums.append((result.checksum_type, result.checksum))
+        self.hosts = [urlparse(u).hostname for u in self.urls]
 
     @classmethod
     def _from_results(cls, results, facets):
@@ -272,6 +274,7 @@ class ESGFFile:
                     "Correcting facet '%s' from '%s' to '%s' for %s.%s", facet,
                     facets.get(facet), value, self.dataset, self.name)
                 facets[facet] = value
+        # Additional facets that matter
         return facets
 
     @staticmethod
@@ -395,6 +398,16 @@ class ESGFFile:
         file.facets = self.facets
         return file
 
+    def prepare_temporary_dir(self, download_dir):
+        """
+        Creates local temporary directory and return it
+        """
+        tmp_dir = TemporaryDirectory().name
+        local_tmp_dir = os.path.join(os.path.dirname(tmp_dir), download_dir)
+        os.makedirs(local_tmp_dir, exist_ok=True)
+        os.makedirs(os.path.join(local_tmp_dir, self.dataset.replace(".","/")), exist_ok=True)
+        return local_tmp_dir
+
     def download(self, dest_folder):
         """Download the file.
 
@@ -413,6 +426,7 @@ class ESGFFile:
         LocalFile
             The path where the file will be located after download.
         """
+        #self.prepare_temporary_dir(dest_folder)
         local_file = self.local_file(dest_folder)
         if local_file.exists():
             logger.debug("Skipping download of existing file %s", local_file)
@@ -456,7 +470,8 @@ class ESGFFile:
             hasher = hashlib.new(checksum_type)
 
         tmp_file = self._tmp_local_file(local_file)
-
+        os.makedirs(tmp_file.parent, exist_ok=True)
+        print(f"downloading {url} to {tmp_file}")
         logger.debug("Downloading %s to %s", url, tmp_file)
         start_time = datetime.datetime.now()
         response = requests.get(url, stream=True, timeout=TIMEOUT)
@@ -508,7 +523,6 @@ def get_download_message(files):
     lines.append(f"Downloading {format_size(total_size)}..")
     return "\n".join(lines)
 
-
 def download(files, dest_folder, n_jobs=4):
     """Download multiple ESGFFiles in parallel.
 
@@ -526,6 +540,7 @@ def download(files, dest_folder, n_jobs=4):
     DownloadError:
         Raised if one or more files failed to download.
     """
+    prepare_temporary_dir(files, dest_folder)
     files = [
         file for file in files if isinstance(file, ESGFFile)
         and not file.local_file(dest_folder).exists()

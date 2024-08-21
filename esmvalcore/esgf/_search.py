@@ -2,11 +2,13 @@
 import itertools
 import logging
 from functools import lru_cache
+from urllib.parse import urlparse
 
-import pyesgf.search
+import pyesgf.search 
 import requests.exceptions
 
 from ..config._esgf_pyclient import get_esgf_config
+from ..config._esgf_network_analytics import get_esgf_nodes_status
 from ..local import (
     _get_start_end_date,
     _parse_period,
@@ -18,6 +20,8 @@ from .facets import DATASET_MAP, FACETS
 
 logger = logging.getLogger(__name__)
 
+class OfflineESGFNodesError(Exception):
+	pass
 
 def get_esgf_facets(variable):
     """Translate variable to facets for searching on ESGF."""
@@ -80,13 +84,17 @@ FIRST_ONLINE_INDEX_NODE = None
 """Remember the first index node that is online."""
 
 
-def _search_index_nodes(facets):
+def _search_index_nodes(facets, validate_nodes):
     """Search for files on ESGF.
 
     Parameters
     ----------
     facets: :obj:`dict` of :obj:`str`
         Facets to constrain the search.
+    
+    validate_nodes :obj:`bool`
+        Boolean flag to indicate whether to collect all files (`False`) or
+        only the ones sitting on a running ESGF node (`True`)
 
     Raises
     ------
@@ -98,6 +106,7 @@ def _search_index_nodes(facets):
     pyesgf.search.results.ResultSet
         A ResultSet containing :obj:`pyesgf.search.results.FileResult`s.
     """
+    
     cfg = get_esgf_config()
     search_args = dict(cfg["search_connection"])
     urls = search_args.pop("urls")
@@ -107,6 +116,7 @@ def _search_index_nodes(facets):
         urls.insert(0, urls.pop(urls.index(FIRST_ONLINE_INDEX_NODE)))
 
     errors = []
+    results = []
     for url in urls:
         connection = pyesgf.search.SearchConnection(url=url, **search_args)
         context = connection.new_context(
@@ -114,24 +124,60 @@ def _search_index_nodes(facets):
             **facets,
         )
         logger.debug("Searching %s for datasets using facets=%s", url, facets)
+        print(f"(DEBUG) searching {url} for {facets}")
         try:
-            results = context.search(
+            url_results = context.search(
                 batch_size=500,
                 ignore_facet_check=True,
             )
-            FIRST_ONLINE_INDEX_NODE = url
-            return list(results)
+            # filter url_results that are available on running nodes
+            # Validate node status
+            if validate_nodes:
+                # Get updated nodes status
+                esgf_nodes_status = get_esgf_nodes_status()
+                for result in url_results:
+                    print(f"(DEBUG) download_url: {urlparse(result.download_url).netloc}, data_node: {result.json['data_node']}")
+                url_results = [
+                    result for result in url_results
+                    if esgf_nodes_status[result.json["data_node"]]
+                ]
+                if len(url_results)==0:
+                    data_nodes = [result.json["data_node"] for result in url_results] 
+                    print(f"(DEBUG) No running node found on {url}: {list(data_nodes)} for facets {facets}")
+                    raise OfflineESGFNodesError(f"No running node found on {url}: {list(data_nodes)} for facets {facets}")
+                else:
+                    FIRST_ONLINE_INDEX_NODE = url
+            # nodes_running = True
+            # data_nodes = set()
+            # jsons = {k: set() for k in ["source_id", "experiment_id", "member_id", "data_node"]} # DEBUG
+            # for result in results:
+            #     print(vars(result))
+            #     data_node = result.json["data_node"]
+            #     # DEBUG
+            #     for k, v in result.json.items():
+            #         if k in ["source_id", "experiment_id", "member_id", "data_node"]:
+            #             jsons[k].add(v if not isinstance(v, list) else tuple(v)) 
+            #     nodes_running &= esgf_nodes_status[data_node]
+            #     data_nodes.add(data_node)
+            #     if not nodes_running:
+            #         print(f"No running node found on {url}: {list(data_nodes)} for facets {facets}. JSONS: {jsons}")
+            #         raise OfflineESGFNodesError(f"No running node found on {url}: {list(data_nodes)} for facets {facets}")
+            # return result iff all data nodes are running!
+            # FIRST_ONLINE_INDEX_NODE = url
+            # return list(results)
+            results.extend(url_results)
         except (
             requests.exceptions.ConnectionError,
             requests.exceptions.HTTPError,
             requests.exceptions.Timeout,
+            OfflineESGFNodesError
         ) as error:
             logger.debug("Unable to connect to %s due to %s", url, error)
             errors.append(error)
-
-    raise FileNotFoundError("Failed to search ESGF, unable to connect:\n" +
-                            "\n".join(f"- {e}" for e in errors))
-
+    if len(results) == 0:
+        raise FileNotFoundError("Failed to search ESGF, unable to connect:\n" +
+                                "\n".join(f"- {e}" for e in errors))
+    return results
 
 def esgf_search_files(facets):
     """Search for files on ESGF.
@@ -146,7 +192,8 @@ def esgf_search_files(facets):
     list of :py:class:`~ESGFFile`
         The found files.
     """
-    results = _search_index_nodes(facets)
+    validate_nodes = facets.pop("validate_nodes", True)
+    results = _search_index_nodes(facets, validate_nodes=validate_nodes)
 
     files = ESGFFile._from_results(results, facets)
 

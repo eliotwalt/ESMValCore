@@ -14,7 +14,6 @@ logger = logging.getLogger(__name__)
 
 CONFIG_FILE = Path.home() / '.esmvaltool' / 'esgf-pyclient.yml'
 
-
 def read_config_file():
     """Read the configuration from file."""
     if CONFIG_FILE.exists():
@@ -58,6 +57,7 @@ def load_esgf_pyclient_config():
                 'https://esgf.nci.org.au/esg-search',
                 'https://esgf.nccs.nasa.gov/esg-search',
                 'https://esgdata.gfdl.noaa.gov/esg-search',
+                'https://esgf-node.ornl.gov/esg-search',
             ],
             'distrib': True,
             'timeout': 120,
