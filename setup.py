@@ -33,7 +33,7 @@ REQUIREMENTS = {
         'dask-jobqueue',
         'esgf-pyclient>=0.3.1',
         'esmf-regrid>=0.10.0',  # iris-esmf-regrid #342
-        'esmpy!=8.1.0',  # not on PyPI
+        #'esmpy>=8.6.0',  # not on PyPI
         'filelock',
         'fiona',
         'fire',
