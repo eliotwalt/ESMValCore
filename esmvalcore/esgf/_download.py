@@ -21,6 +21,7 @@ from humanfriendly import format_size, format_timespan
 
 from esmvalcore.typing import Facets
 
+from ..config._esgf_network_analytics import get_esgf_nodes_status
 from ..local import LocalFile
 from .facets import DATASET_MAP, FACETS
 
@@ -200,11 +201,13 @@ class ESGFFile:
         self.facets = self._get_facets(results)
         self.urls = []
         self._checksums = []
+        self.hosts = []
         for result in results:
-            if not result.download_url in self.urls:
+            host = urlparse(result.download_url).hostname
+            if not host in self.hosts:
+                self.hosts.append(host)
                 self.urls.append(result.download_url)
                 self._checksums.append((result.checksum_type, result.checksum))
-        self.hosts = [urlparse(u).hostname for u in self.urls]
 
     @classmethod
     def _from_results(cls, results, facets):
@@ -398,16 +401,25 @@ class ESGFFile:
         file.facets = self.facets
         return file
 
-    def prepare_temporary_dir(self, download_dir):
-        """
-        Creates local temporary directory and return it
-        """
-        tmp_dir = TemporaryDirectory().name
-        local_tmp_dir = os.path.join(os.path.dirname(tmp_dir), download_dir)
-        os.makedirs(local_tmp_dir, exist_ok=True)
-        os.makedirs(os.path.join(local_tmp_dir, self.dataset.replace(".","/")), exist_ok=True)
-        return local_tmp_dir
+    # def prepare_temporary_dir(self, download_dir):
+    #     """
+    #     Creates local temporary directory and return it
+    #     """
+    #     tmp_dir = TemporaryDirectory().name
+    #     local_tmp_dir = os.path.join(os.path.dirname(tmp_dir), download_dir)
+    #     os.makedirs(local_tmp_dir, exist_ok=True)
+    #     os.makedirs(os.path.join(local_tmp_dir, self.dataset.replace(".","/")), exist_ok=True)
+    #     return local_tmp_dir
 
+    def _filter_running_esgf_nodes(self):
+        esgf_nodes_status = get_esgf_nodes_status()
+        N = len(self.hosts)
+        for i in range(N):
+            if not esgf_nodes_status[self.hosts[i]]:
+                self.urls.pop(i)
+                self.hosts.pop(i)
+                self._checksums.pop(i)
+    
     def download(self, dest_folder):
         """Download the file.
 
@@ -471,7 +483,7 @@ class ESGFFile:
 
         tmp_file = self._tmp_local_file(local_file)
         os.makedirs(tmp_file.parent, exist_ok=True)
-        print(f"downloading {url} to {tmp_file}")
+        
         logger.debug("Downloading %s to %s", url, tmp_file)
         start_time = datetime.datetime.now()
         response = requests.get(url, stream=True, timeout=TIMEOUT)
